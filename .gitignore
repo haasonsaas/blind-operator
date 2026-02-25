@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.DS_Store
+
+# Local state (vault db + blobs)
+.blindop/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/

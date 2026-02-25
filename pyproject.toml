@@ -1,0 +1,13 @@
+[project]
+name = "blind-operator"
+version = "0.1.0"
+description = "Opaque-handle case vault with safe-output gating"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+blindop = "blindop.cli:main"
+
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"

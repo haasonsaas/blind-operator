@@ -35,21 +35,25 @@ class TestGatewayWorkflow(unittest.TestCase):
 
                 p1 = state_dir / "a.txt"
                 p1.write_text("visit https://example.com and email a@b.com 1.2.3.4", encoding="utf-8")
-                a1 = gw.call(
+                ing1 = gw.call(
                     "artifact.ingest",
                     case_id=case_id,
                     src_path=p1,
                     label=Label.restricted,
-                )["result"]["handle"]
+                )
+                self.assertEqual(ing1["output_label"], Label.restricted.value)
+                a1 = ing1["result"]["handle"]
 
                 p2 = state_dir / "b.txt"
                 p2.write_text("visit https://example.com and email a@b.com 1.2.3.4", encoding="utf-8")
-                a2 = gw.call(
+                ing2 = gw.call(
                     "artifact.ingest",
                     case_id=case_id,
                     src_path=p2,
                     label=Label.restricted,
-                )["result"]["handle"]
+                )
+                self.assertEqual(ing2["output_label"], Label.restricted.value)
+                a2 = ing2["result"]["handle"]
 
                 dd = gw.call("artifact.dedupe", case_id=case_id, include_unique=False)["result"]
                 self.assertEqual(dd["group_count"], 1)
@@ -59,7 +63,9 @@ class TestGatewayWorkflow(unittest.TestCase):
                 art = gw.call("artifact.show", handle=a1)["result"]
                 self.assertIn("possible_exfil", art["tags"])
 
-                iocs = gw.call("iocs.extract", handle=a1, include_hashes=True, top=5)["result"]
+                iocs_resp = gw.call("iocs.extract", handle=a1, include_hashes=True, top=5)
+                self.assertEqual(iocs_resp["output_label"], Label.restricted.value)
+                iocs = iocs_resp["result"]
                 self.assertIn("counts", iocs)
                 self.assertIn("hmac_sha256_top", iocs)
 

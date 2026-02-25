@@ -205,6 +205,7 @@ class Gateway:
             name: {
                 "max_input_label": spec.policy.max_input_label.value,
                 "output_label": spec.policy.output_label.value,
+                "output_label_mode": "join(input_label, output_label)",
                 "description": spec.policy.description,
             }
             for name, spec in sorted(self._tools.items())
@@ -220,6 +221,7 @@ class Gateway:
 
         spec = self._tools[tool]
         input_label = self._compute_input_label(spec, kwargs)
+        output_label = join([input_label, spec.policy.output_label])
 
         if not dominates(spec.policy.max_input_label, input_label):
             self._audit(
@@ -228,6 +230,8 @@ class Gateway:
                 tool,
                 allowed=False,
                 reason=f"input_label_too_high:{input_label.value}",
+                input_label=input_label,
+                output_label=output_label,
             )
             raise PolicyDenied(
                 f"tool '{tool}' denied for input_label={input_label.value} (max={spec.policy.max_input_label.value})"
@@ -237,17 +241,33 @@ class Gateway:
             raw_result = spec.handler(**kwargs)
             safe_result = sanitize(raw_result, self.budget)
         except Exception as e:
-            self._audit(ts, request_id, tool, allowed=True, reason=f"error:{type(e).__name__}")
+            self._audit(
+                ts,
+                request_id,
+                tool,
+                allowed=True,
+                reason=f"error:{type(e).__name__}",
+                input_label=input_label,
+                output_label=output_label,
+            )
             raise
 
-        self._audit(ts, request_id, tool, allowed=True, reason="ok")
+        self._audit(
+            ts,
+            request_id,
+            tool,
+            allowed=True,
+            reason="ok",
+            input_label=input_label,
+            output_label=output_label,
+        )
         return sanitize(
             {
                 "ok": True,
                 "request_id": request_id,
                 "tool": tool,
                 "input_label": input_label.value,
-                "output_label": spec.policy.output_label.value,
+                "output_label": output_label.value,
                 "result": safe_result,
             },
             self.budget,
@@ -288,7 +308,17 @@ class Gateway:
 
         return join(labels) if labels else Label.public
 
-    def _audit(self, ts: str, request_id: str, tool: str, *, allowed: bool, reason: str) -> None:
+    def _audit(
+        self,
+        ts: str,
+        request_id: str,
+        tool: str,
+        *,
+        allowed: bool,
+        reason: str,
+        input_label: Optional[Label] = None,
+        output_label: Optional[Label] = None,
+    ) -> None:
         rec = {
             "ts": ts,
             "request_id": request_id,
@@ -296,6 +326,10 @@ class Gateway:
             "allowed": allowed,
             "reason": reason,
         }
+        if input_label is not None:
+            rec["input_label"] = input_label.value
+        if output_label is not None:
+            rec["output_label"] = output_label.value
         try:
             self.paths.audit_log.parent.mkdir(parents=True, exist_ok=True)
             with self.paths.audit_log.open("a", encoding="utf-8") as f:

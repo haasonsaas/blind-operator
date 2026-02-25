@@ -61,6 +61,14 @@ def init_db(conn: sqlite3.Connection) -> None:
           kind TEXT NOT NULL,
           details_json TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS rulepacks (
+          rulepack_id TEXT PRIMARY KEY,
+          name TEXT,
+          sha256 TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          rules_json TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -283,3 +291,51 @@ def event_count(conn: sqlite3.Connection, case_id: str, *, kind: str) -> int:
         (case_id, kind),
     ).fetchone()
     return int(row["n"]) if row is not None else 0
+
+
+def rulepack_insert(
+    conn: sqlite3.Connection,
+    *,
+    rulepack_id: str,
+    name: Optional[str],
+    sha256: str,
+    rules_json: str,
+) -> Dict[str, Any]:
+    created_at = utc_now_iso()
+    conn.execute(
+        "INSERT INTO rulepacks(rulepack_id, name, sha256, created_at, rules_json) VALUES(?, ?, ?, ?, ?)",
+        (rulepack_id, name, sha256, created_at, rules_json),
+    )
+    conn.commit()
+    return {
+        "rulepack_id": rulepack_id,
+        "name": name,
+        "sha256": sha256,
+        "created_at": created_at,
+    }
+
+
+def rulepack_get(conn: sqlite3.Connection, rulepack_id: str) -> Dict[str, Any]:
+    row = conn.execute(
+        "SELECT rulepack_id, name, sha256, created_at, rules_json FROM rulepacks WHERE rulepack_id = ?",
+        (rulepack_id,),
+    ).fetchone()
+    if row is None:
+        raise NotFoundError(f"rulepack not found: {rulepack_id}")
+    d = dict(row)
+    d["rules"] = json.loads(d.pop("rules_json"))
+    return d
+
+
+def rulepack_list(conn: sqlite3.Connection, *, limit: int = 200) -> List[Dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT rulepack_id, name, sha256, created_at, rules_json FROM rulepacks ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        rules = json.loads(d.pop("rules_json"))
+        d["rule_count"] = len(rules.get("rules", []) if isinstance(rules, dict) else [])
+        out.append(d)
+    return out

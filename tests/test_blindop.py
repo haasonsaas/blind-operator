@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from blindop.caps import mint_token
 from blindop.errors import PolicyDenied
 from blindop.gateway import Gateway
 from blindop.policy import Label
@@ -44,7 +45,9 @@ class TestGatewayWorkflow(unittest.TestCase):
                     label=Label.restricted,
                 )
                 self.assertEqual(ing1["output_label"], Label.restricted.value)
+                self.assertTrue(str(ing1["result"].get("blob_sha256", "")).startswith("hmac256:"))
                 a1 = ing1["result"]["handle"]
+                blob1 = ing1["result"]["blob_sha256"]
 
                 p2 = state_dir / "b.txt"
                 p2.write_text("visit https://example.com and email a@b.com 1.2.3.4", encoding="utf-8")
@@ -64,6 +67,7 @@ class TestGatewayWorkflow(unittest.TestCase):
                 gw.call("tag.add", handle=a1, tag="possible_exfil")
                 art = gw.call("artifact.show", handle=a1)["result"]
                 self.assertIn("possible_exfil", art["tags"])
+                self.assertEqual(art["blob_sha256"], blob1)
 
                 iocs_resp = gw.call("iocs.extract", handle=a1, include_hashes=True, top=5)
                 self.assertEqual(iocs_resp["output_label"], Label.restricted.value)
@@ -80,7 +84,8 @@ class TestGatewayWorkflow(unittest.TestCase):
                     json.dumps({"rules": [{"id": "has_example", "regex": "example\\.com"}]}),
                     encoding="utf-8",
                 )
-                rp = gw.call("rulepack.scan", handle=a1, rules_path=rules)["result"]
+                rp_id = gw.call("rulepack.register", rules_path=rules, name="unit")["result"]["rulepack_id"]
+                rp = gw.call("rulepack.scan", handle=a1, rulepack_id=rp_id)["result"]
                 self.assertEqual(rp["matched_count"], 1)
                 self.assertIn("has_example", rp["matched_rule_ids"])
 
@@ -146,9 +151,11 @@ class TestBudgets(unittest.TestCase):
                     rules = state_dir / "rules.json"
                     rules.write_text(json.dumps({"rules": [{"id": "has_example", "regex": "example\\.com"}]}))
 
-                    gw.call("rulepack.scan", handle=h, rules_path=rules)
+                    rp_id = gw.call("rulepack.register", rules_path=rules, name="b")["result"]["rulepack_id"]
+
+                    gw.call("rulepack.scan", handle=h, rulepack_id=rp_id)
                     with self.assertRaises(PolicyDenied):
-                        gw.call("rulepack.scan", handle=h, rules_path=rules)
+                        gw.call("rulepack.scan", handle=h, rulepack_id=rp_id)
                 finally:
                     gw.close()
         finally:
@@ -156,3 +163,97 @@ class TestBudgets(unittest.TestCase):
                 os.environ.pop(env_name, None)
             else:
                 os.environ[env_name] = prev
+
+
+class TestCapabilities(unittest.TestCase):
+    def test_requires_caps_when_enabled(self) -> None:
+        env_require = "BLINDOP_REQUIRE_CAPS"
+        env_key = "BLINDOP_CAPS_KEY"
+        prev_require = os.environ.get(env_require)
+        prev_key = os.environ.get(env_key)
+
+        os.environ[env_require] = "1"
+        os.environ[env_key] = "00" * 32
+        key = bytes.fromhex(os.environ[env_key])
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                state_dir = Path(td)
+                gw = Gateway(state_dir=state_dir)
+                try:
+                    with self.assertRaises(PolicyDenied):
+                        gw.call("case.create", name="nope")
+
+                    global_tok = mint_token(
+                        key,
+                        tools=["case.create"],
+                        resources=[{"type": "global", "id": "*"}],
+                        max_label=Label.restricted,
+                        ttl_seconds=3600,
+                        subject="test",
+                    )
+                    case_id = gw.call("case.create", name="ok", caps=[global_tok])["result"]["case_id"]
+
+                    case_tok_internal = mint_token(
+                        key,
+                        tools=["*"],
+                        resources=[
+                            {
+                                "type": "case",
+                                "id": case_id,
+                                "include_artifacts": True,
+                            }
+                        ],
+                        max_label=Label.internal,
+                        ttl_seconds=3600,
+                        subject="test",
+                    )
+                    p = state_dir / "a.txt"
+                    p.write_text("email a@b.com", encoding="utf-8")
+                    with self.assertRaises(PolicyDenied):
+                        gw.call(
+                            "artifact.ingest",
+                            case_id=case_id,
+                            src_path=p,
+                            label=Label.restricted,
+                            caps=[case_tok_internal],
+                        )
+
+                    case_tok = mint_token(
+                        key,
+                        tools=["*"],
+                        resources=[
+                            {
+                                "type": "case",
+                                "id": case_id,
+                                "include_artifacts": True,
+                            }
+                        ],
+                        max_label=Label.restricted,
+                        ttl_seconds=3600,
+                        subject="test",
+                    )
+                    handle = gw.call(
+                        "artifact.ingest",
+                        case_id=case_id,
+                        src_path=p,
+                        label=Label.restricted,
+                        caps=[case_tok],
+                    )["result"]["handle"]
+
+                    with self.assertRaises(PolicyDenied):
+                        gw.call("artifact.show", handle=handle)
+
+                    got = gw.call("artifact.show", handle=handle, caps=[case_tok])
+                    self.assertEqual(got["output_label"], Label.restricted.value)
+                finally:
+                    gw.close()
+        finally:
+            if prev_require is None:
+                os.environ.pop(env_require, None)
+            else:
+                os.environ[env_require] = prev_require
+
+            if prev_key is None:
+                os.environ.pop(env_key, None)
+            else:
+                os.environ[env_key] = prev_key

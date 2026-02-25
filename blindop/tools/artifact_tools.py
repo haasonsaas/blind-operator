@@ -79,8 +79,8 @@ def dedupe(
         total += len(handles)
         if not include_unique and len(handles) < 2:
             continue
-        out_groups.append({"sha256": sha, "count": len(handles), "handles": handles})
-    out_groups.sort(key=lambda g: (-g["count"], g["sha256"]))
+        out_groups.append({"blob_sha256": sha, "count": len(handles), "handles": handles})
+    out_groups.sort(key=lambda g: (-g["count"], g["blob_sha256"]))
     return {
         "case_id": case_id,
         "total_artifacts": total,
@@ -138,8 +138,8 @@ def diff(
         "handle_a": handle_a,
         "handle_b": handle_b,
         "same_blob": same,
-        "sha256_a": a["blob_sha256"],
-        "sha256_b": b["blob_sha256"],
+        "blob_sha256_a": a["blob_sha256"],
+        "blob_sha256_b": b["blob_sha256"],
         "size_bytes_a": size_a,
         "size_bytes_b": size_b,
         "size_delta": size_b - size_a,

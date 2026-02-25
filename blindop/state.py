@@ -15,6 +15,7 @@ class StatePaths:
     blobs_dir: Path
     audit_log: Path
     key_path: Path
+    caps_key_path: Path
 
 
 def resolve_state_dir(state_dir: Optional[str]) -> Path:
@@ -33,4 +34,5 @@ def ensure_state_paths(root: Path) -> StatePaths:
         blobs_dir=blobs_dir,
         audit_log=root / "audit.log",
         key_path=root / "hmac.key",
+        caps_key_path=root / "caps.key",
     )

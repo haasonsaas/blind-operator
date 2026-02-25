@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .caps import mint_token, verify_token
 from .errors import BlindOpError
 from .gateway import Gateway
+from .keys import load_or_create_key
 from .policy import parse_label
-from .state import resolve_state_dir
+from .state import ensure_state_paths, resolve_state_dir
 
 
 def _print(obj: Any) -> None:
@@ -18,10 +20,26 @@ def _print(obj: Any) -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="blindop")
     p.add_argument("--state-dir", default=None, help="State directory (default: ./.blindop)")
+    p.add_argument("--cap", action="append", default=[], help="Capability token (repeatable)")
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("tools", help="List available tools")
+
+    cap_p = sub.add_parser("cap", help="Capability tokens")
+    cap_sub = cap_p.add_subparsers(dest="cap_cmd", required=True)
+    cap_mint = cap_sub.add_parser("mint", help="Mint a capability token")
+    cap_mint.add_argument("--tool", action="append", required=True, help="Allowed tool (repeatable; or '*')")
+    cap_mint.add_argument("--case", dest="case_ids", action="append", default=[])
+    cap_mint.add_argument("--include-artifacts", action="store_true", help="Case caps cover artifacts in the case")
+    cap_mint.add_argument("--artifact", dest="handles", action="append", default=[])
+    cap_mint.add_argument("--global", dest="global_scope", action="store_true")
+    cap_mint.add_argument("--max-label", default="restricted", help="public|internal|confidential|restricted")
+    cap_mint.add_argument("--ttl-seconds", type=int, default=3600)
+    cap_mint.add_argument("--subject", default="operator")
+
+    cap_verify = cap_sub.add_parser("verify", help="Verify/decode a capability token")
+    cap_verify.add_argument("token")
 
     case_p = sub.add_parser("case", help="Case operations")
     case_sub = case_p.add_subparsers(dest="case_cmd", required=True)
@@ -59,9 +77,17 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     rp_p = sub.add_parser("rulepack", help="Rulepack scanning")
     rp_sub = rp_p.add_subparsers(dest="rp_cmd", required=True)
+
+    rp_reg = rp_sub.add_parser("register", help="Register a trusted rulepack")
+    rp_reg.add_argument("--rules", dest="rules_path", required=True)
+    rp_reg.add_argument("--name", default=None)
+
+    rp_list = rp_sub.add_parser("list", help="List registered rulepacks")
+    rp_list.add_argument("--limit", type=int, default=200)
+
     rp_scan = rp_sub.add_parser("scan")
     rp_scan.add_argument("handle")
-    rp_scan.add_argument("--rules", dest="rules_path", required=True)
+    rp_scan.add_argument("--rulepack", dest="rulepack_id", required=True)
 
     ioc_p = sub.add_parser("iocs", help="IOC extraction")
     ioc_p.add_argument("handle")
@@ -79,19 +105,56 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = p.parse_args(argv)
     state_dir = resolve_state_dir(args.state_dir)
-
-    gw = Gateway(state_dir=state_dir)
+    gw: Optional[Gateway] = None
     try:
+        if args.cmd == "cap":
+            paths = ensure_state_paths(state_dir)
+            key = load_or_create_key(paths.caps_key_path, env_var="BLINDOP_CAPS_KEY", length=32)
+
+            if args.cap_cmd == "mint":
+                resources = []
+                if bool(args.global_scope):
+                    resources.append({"type": "global", "id": "*"})
+                for cid in args.case_ids:
+                    resources.append(
+                        {
+                            "type": "case",
+                            "id": str(cid),
+                            "include_artifacts": bool(args.include_artifacts),
+                        }
+                    )
+                for h in args.handles:
+                    resources.append({"type": "artifact", "id": str(h)})
+
+                tok = mint_token(
+                    key,
+                    tools=args.tool,
+                    resources=resources,
+                    max_label=parse_label(args.max_label),
+                    ttl_seconds=int(args.ttl_seconds),
+                    subject=str(args.subject),
+                )
+                _print({"ok": True, "token": tok, "claims": verify_token(key, tok)})
+                return 0
+
+            if args.cap_cmd == "verify":
+                _print({"ok": True, "claims": verify_token(key, args.token)})
+                return 0
+
+            _print({"ok": False, "error": "unreachable"})
+            return 2
+
+        gw = Gateway(state_dir=state_dir)
         if args.cmd == "tools":
             _print(gw.describe_tools())
             return 0
 
         if args.cmd == "case":
             if args.case_cmd == "create":
-                _print(gw.call("case.create", name=args.name))
+                _print(gw.call("case.create", name=args.name, caps=args.cap))
                 return 0
             if args.case_cmd == "list":
-                _print(gw.call("case.list"))
+                _print(gw.call("case.list", caps=args.cap))
                 return 0
 
         if args.cmd == "ingest":
@@ -101,27 +164,28 @@ def main(argv: Optional[list[str]] = None) -> int:
                     case_id=args.case_id,
                     src_path=Path(args.path).expanduser().resolve(),
                     label=parse_label(args.label),
+                    caps=args.cap,
                 )
             )
             return 0
 
         if args.cmd == "artifact":
             if args.artifact_cmd == "show":
-                _print(gw.call("artifact.show", handle=args.handle))
+                _print(gw.call("artifact.show", handle=args.handle, caps=args.cap))
                 return 0
             if args.artifact_cmd == "list":
-                _print(gw.call("artifact.list", case_id=args.case_id))
+                _print(gw.call("artifact.list", case_id=args.case_id, caps=args.cap))
                 return 0
             if args.artifact_cmd == "move":
-                _print(gw.call("artifact.move", handle=args.handle, case_id=args.case_id))
+                _print(gw.call("artifact.move", handle=args.handle, case_id=args.case_id, caps=args.cap))
                 return 0
 
         if args.cmd == "tag":
             if args.tag_cmd == "add":
-                _print(gw.call("tag.add", handle=args.handle, tag=args.tag))
+                _print(gw.call("tag.add", handle=args.handle, tag=args.tag, caps=args.cap))
                 return 0
             if args.tag_cmd == "remove":
-                _print(gw.call("tag.remove", handle=args.handle, tag=args.tag))
+                _print(gw.call("tag.remove", handle=args.handle, tag=args.tag, caps=args.cap))
                 return 0
 
         if args.cmd == "dedupe":
@@ -130,19 +194,37 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "artifact.dedupe",
                     case_id=args.case_id,
                     include_unique=bool(args.include_unique),
+                    caps=args.cap,
                 )
             )
             return 0
 
-        if args.cmd == "rulepack" and args.rp_cmd == "scan":
-            _print(
-                gw.call(
-                    "rulepack.scan",
-                    handle=args.handle,
-                    rules_path=Path(args.rules_path).expanduser().resolve(),
+        if args.cmd == "rulepack":
+            if args.rp_cmd == "register":
+                _print(
+                    gw.call(
+                        "rulepack.register",
+                        rules_path=Path(args.rules_path).expanduser().resolve(),
+                        name=args.name,
+                        caps=args.cap,
+                    )
                 )
-            )
-            return 0
+                return 0
+
+            if args.rp_cmd == "list":
+                _print(gw.call("rulepack.list", limit=int(args.limit), caps=args.cap))
+                return 0
+
+            if args.rp_cmd == "scan":
+                _print(
+                    gw.call(
+                        "rulepack.scan",
+                        handle=args.handle,
+                        rulepack_id=args.rulepack_id,
+                        caps=args.cap,
+                    )
+                )
+                return 0
 
         if args.cmd == "iocs":
             _print(
@@ -152,16 +234,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                     include_hashes=bool(args.include_hashes),
                     top=int(args.top),
                     k_min=int(args.k_min),
+                    caps=args.cap,
                 )
             )
             return 0
 
         if args.cmd == "timeline":
-            _print(gw.call("timeline.build", case_id=args.case_id, limit=int(args.limit)))
+            _print(gw.call("timeline.build", case_id=args.case_id, limit=int(args.limit), caps=args.cap))
             return 0
 
         if args.cmd == "diff":
-            _print(gw.call("artifact.diff", handle_a=args.handle_a, handle_b=args.handle_b))
+            _print(gw.call("artifact.diff", handle_a=args.handle_a, handle_b=args.handle_b, caps=args.cap))
             return 0
 
         _print({"ok": False, "error": "unreachable"})
@@ -173,4 +256,5 @@ def main(argv: Optional[list[str]] = None) -> int:
         _print({"ok": False, "error": type(e).__name__, "message": str(e)})
         return 1
     finally:
-        gw.close()
+        if gw is not None:
+            gw.close()

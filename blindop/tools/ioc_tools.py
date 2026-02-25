@@ -35,6 +35,7 @@ def extract(
     handle: str,
     include_hashes: bool = False,
     top: int = 20,
+    k_min: int = 1,
     max_scan_bytes: int = 5 * 1024 * 1024,
 ) -> Dict[str, Any]:
     art = db.artifact_get(conn, handle)
@@ -66,14 +67,18 @@ def extract(
     }
 
     if include_hashes:
+        top = min(max(int(top), 0), 100)
+        k_min = max(int(k_min), 1)
+        out["hash_top"] = top
+        out["hash_k_min"] = k_min
         out["hmac_sha256_top"] = {
-            "ipv4": _top_hmac(ipv4, hmac_key, top),
-            "email": _top_hmac(emails, hmac_key, top),
-            "url": _top_hmac(urls, hmac_key, top),
-            "domain": _top_hmac(domains, hmac_key, top),
-            "md5": _top_hmac(md5s, hmac_key, top),
-            "sha1": _top_hmac(sha1s, hmac_key, top),
-            "sha256": _top_hmac(sha256s, hmac_key, top),
+            "ipv4": _top_hmac(ipv4, hmac_key, top, k_min),
+            "email": _top_hmac(emails, hmac_key, top, k_min),
+            "url": _top_hmac(urls, hmac_key, top, k_min),
+            "domain": _top_hmac(domains, hmac_key, top, k_min),
+            "md5": _top_hmac(md5s, hmac_key, top, k_min),
+            "sha1": _top_hmac(sha1s, hmac_key, top, k_min),
+            "sha256": _top_hmac(sha256s, hmac_key, top, k_min),
         }
 
     db.event_insert(
@@ -88,10 +93,13 @@ def extract(
     return out
 
 
-def _top_hmac(values: List[str], key: bytes, top: int) -> List[Dict[str, Any]]:
+def _top_hmac(values: List[str], key: bytes, top: int, k_min: int) -> List[Dict[str, Any]]:
     freq: Dict[str, int] = {}
     for v in values:
         hv = _hmac_sha256_hex(key, v)
         freq[hv] = freq.get(hv, 0) + 1
-    items = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))[: max(0, top)]
+    items = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+    if k_min > 1:
+        items = [kv for kv in items if kv[1] >= k_min]
+    items = items[: max(0, top)]
     return [{"hmac_sha256": h, "count": c} for h, c in items]

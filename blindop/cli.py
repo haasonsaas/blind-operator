@@ -67,6 +67,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ioc_p.add_argument("handle")
     ioc_p.add_argument("--include-hashes", action="store_true")
     ioc_p.add_argument("--top", type=int, default=20)
+    ioc_p.add_argument("--k-min", type=int, default=1, help="Only return hashed values with count >= k")
 
     tl_p = sub.add_parser("timeline", help="Build a timeline")
     tl_p.add_argument("--case", dest="case_id", required=True)
@@ -150,6 +151,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     handle=args.handle,
                     include_hashes=bool(args.include_hashes),
                     top=int(args.top),
+                    k_min=int(args.k_min),
                 )
             )
             return 0

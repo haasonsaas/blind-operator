@@ -69,6 +69,10 @@ class TestGatewayWorkflow(unittest.TestCase):
                 self.assertIn("counts", iocs)
                 self.assertIn("hmac_sha256_top", iocs)
 
+                iocs_kmin = gw.call("iocs.extract", handle=a1, include_hashes=True, top=5, k_min=2)["result"]
+                self.assertEqual(iocs_kmin["hash_k_min"], 2)
+                self.assertEqual(iocs_kmin["hmac_sha256_top"]["email"], [])
+
                 rules = state_dir / "rules.json"
                 rules.write_text(
                     json.dumps({"rules": [{"id": "has_example", "regex": "example\\.com"}]}),

@@ -157,13 +157,14 @@ class Gateway:
                     output_label=Label.internal,
                     description="Extract IOC counts and optionally HMAC-pseudonymized IOCs.",
                 ),
-                handler=lambda *, handle, include_hashes=False, top=20: ioc_tools.extract(
+                handler=lambda *, handle, include_hashes=False, top=20, k_min=1: ioc_tools.extract(
                     self.conn,
                     blob_store=self.blob_store,
                     hmac_key=self.hmac_key,
                     handle=handle,
                     include_hashes=include_hashes,
                     top=top,
+                    k_min=k_min,
                 ),
                 handle_args=("handle",),
             ),

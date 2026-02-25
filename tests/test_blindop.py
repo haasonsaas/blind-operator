@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
+from blindop.errors import PolicyDenied
 from blindop.gateway import Gateway
 from blindop.policy import Label
 from blindop.safe_output import SafeOutputBudget, sanitize
@@ -89,3 +91,68 @@ class TestGatewayWorkflow(unittest.TestCase):
                 self.assertTrue(df["same_blob"])
             finally:
                 gw.close()
+
+
+class TestBudgets(unittest.TestCase):
+    def test_iocs_hashed_budget_per_case(self) -> None:
+        env_name = "BLINDOP_BUDGET_IOCS_HASHED_PER_CASE"
+        prev = os.environ.get(env_name)
+        os.environ[env_name] = "1"
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                state_dir = Path(td)
+                gw = Gateway(state_dir=state_dir)
+                try:
+                    case_id = gw.call("case.create", name="b")["result"]["case_id"]
+                    p = state_dir / "a.txt"
+                    p.write_text("email a@b.com", encoding="utf-8")
+                    h = gw.call(
+                        "artifact.ingest",
+                        case_id=case_id,
+                        src_path=p,
+                        label=Label.restricted,
+                    )["result"]["handle"]
+
+                    gw.call("iocs.extract", handle=h, include_hashes=True, top=5)
+                    with self.assertRaises(PolicyDenied):
+                        gw.call("iocs.extract", handle=h, include_hashes=True, top=5)
+                finally:
+                    gw.close()
+        finally:
+            if prev is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = prev
+
+    def test_rulepack_scan_budget_per_case(self) -> None:
+        env_name = "BLINDOP_BUDGET_RULEPACK_SCANS_PER_CASE"
+        prev = os.environ.get(env_name)
+        os.environ[env_name] = "1"
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                state_dir = Path(td)
+                gw = Gateway(state_dir=state_dir)
+                try:
+                    case_id = gw.call("case.create", name="b")["result"]["case_id"]
+                    p = state_dir / "a.txt"
+                    p.write_text("hello example.com", encoding="utf-8")
+                    h = gw.call(
+                        "artifact.ingest",
+                        case_id=case_id,
+                        src_path=p,
+                        label=Label.restricted,
+                    )["result"]["handle"]
+
+                    rules = state_dir / "rules.json"
+                    rules.write_text(json.dumps({"rules": [{"id": "has_example", "regex": "example\\.com"}]}))
+
+                    gw.call("rulepack.scan", handle=h, rules_path=rules)
+                    with self.assertRaises(PolicyDenied):
+                        gw.call("rulepack.scan", handle=h, rules_path=rules)
+                finally:
+                    gw.close()
+        finally:
+            if prev is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = prev

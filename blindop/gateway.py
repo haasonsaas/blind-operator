@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
@@ -14,6 +15,22 @@ from .state import StatePaths, ensure_state_paths
 from .util import new_id, utc_now_iso
 from .vault import BlobStore
 from .tools import artifact_tools, case_tools, ioc_tools, rulepack_tools, tag_tools, timeline_tools
+
+
+def _read_budget_limit(env_name: str, default: int) -> Optional[int]:
+    raw = os.getenv(env_name)
+    if raw is None or raw.strip() == "":
+        return default
+    v = raw.strip().lower()
+    if v in {"off", "none", "unlimited", "inf", "infinite", "-1"}:
+        return None
+    try:
+        n = int(v)
+    except ValueError:
+        return default
+    if n < 0:
+        return None
+    return n
 
 
 @dataclass(frozen=True)
@@ -38,6 +55,9 @@ class Gateway:
         self.blob_store = BlobStore(self.paths.blobs_dir)
         self.hmac_key = load_or_create_hmac_key(self.paths.key_path)
         self.budget = budget
+
+        self._budget_iocs_hashed_per_case = _read_budget_limit("BLINDOP_BUDGET_IOCS_HASHED_PER_CASE", 200)
+        self._budget_rulepack_scans_per_case = _read_budget_limit("BLINDOP_BUDGET_RULEPACK_SCANS_PER_CASE", 1000)
 
         self._tools: Dict[str, ToolSpec] = {
             "case.create": ToolSpec(
@@ -238,6 +258,15 @@ class Gateway:
                 f"tool '{tool}' denied for input_label={input_label.value} (max={spec.policy.max_input_label.value})"
             )
 
+        self._enforce_budgets(
+            ts,
+            request_id,
+            tool,
+            kwargs,
+            input_label=input_label,
+            output_label=output_label,
+        )
+
         try:
             raw_result = spec.handler(**kwargs)
             safe_result = sanitize(raw_result, self.budget)
@@ -309,6 +338,60 @@ class Gateway:
 
         return join(labels) if labels else Label.public
 
+    def _enforce_budgets(
+        self,
+        ts: str,
+        request_id: str,
+        tool: str,
+        kwargs: Dict[str, Any],
+        *,
+        input_label: Label,
+        output_label: Label,
+    ) -> None:
+        if tool == "iocs.extract" and bool(kwargs.get("include_hashes")):
+            limit = self._budget_iocs_hashed_per_case
+            if limit is not None:
+                handle = kwargs.get("handle")
+                if not isinstance(handle, str):
+                    raise ToolInputError("invalid handle")
+                case_id = db.artifact_case_id(self.conn, handle)
+                used = db.event_count(self.conn, case_id, kind="iocs_hashed_extracted")
+                if used >= limit:
+                    reason = f"budget_exhausted:iocs_hashed_extracted:{used}/{limit}"
+                    self._audit(
+                        ts,
+                        request_id,
+                        tool,
+                        allowed=False,
+                        reason=reason,
+                        input_label=input_label,
+                        output_label=output_label,
+                        case_id=case_id,
+                    )
+                    raise PolicyDenied(f"budget exhausted for case {case_id}: iocs_hashed_extracted {used}/{limit}")
+
+        if tool == "rulepack.scan":
+            limit = self._budget_rulepack_scans_per_case
+            if limit is not None:
+                handle = kwargs.get("handle")
+                if not isinstance(handle, str):
+                    raise ToolInputError("invalid handle")
+                case_id = db.artifact_case_id(self.conn, handle)
+                used = db.event_count(self.conn, case_id, kind="rulepack_scanned")
+                if used >= limit:
+                    reason = f"budget_exhausted:rulepack_scanned:{used}/{limit}"
+                    self._audit(
+                        ts,
+                        request_id,
+                        tool,
+                        allowed=False,
+                        reason=reason,
+                        input_label=input_label,
+                        output_label=output_label,
+                        case_id=case_id,
+                    )
+                    raise PolicyDenied(f"budget exhausted for case {case_id}: rulepack_scanned {used}/{limit}")
+
     def _audit(
         self,
         ts: str,
@@ -319,6 +402,7 @@ class Gateway:
         reason: str,
         input_label: Optional[Label] = None,
         output_label: Optional[Label] = None,
+        case_id: Optional[str] = None,
     ) -> None:
         rec = {
             "ts": ts,
@@ -331,6 +415,8 @@ class Gateway:
             rec["input_label"] = input_label.value
         if output_label is not None:
             rec["output_label"] = output_label.value
+        if case_id is not None:
+            rec["case_id"] = case_id
         try:
             self.paths.audit_log.parent.mkdir(parents=True, exist_ok=True)
             with self.paths.audit_log.open("a", encoding="utf-8") as f:

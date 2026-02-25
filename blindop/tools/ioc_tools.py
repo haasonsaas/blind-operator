@@ -81,14 +81,20 @@ def extract(
             "sha256": _top_hmac(sha256s, hmac_key, top, k_min),
         }
 
+    event_kind = "iocs_hashed_extracted" if include_hashes else "iocs_extracted"
     db.event_insert(
         conn,
         event_id=new_id(),
         case_id=art["case_id"],
         handle=handle,
         ts=utc_now_iso(),
-        kind="iocs_extracted",
-        details={"counts": counts},
+        kind=event_kind,
+        details={
+            "counts": counts,
+            "include_hashes": bool(include_hashes),
+            "top": int(top) if include_hashes else None,
+            "k_min": int(k_min) if include_hashes else None,
+        },
     )
     return out
 

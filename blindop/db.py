@@ -267,3 +267,19 @@ def case_label(conn: sqlite3.Connection, case_id: str) -> Label:
     if not rows:
         return Label.public
     return join(Label(r["label"]) for r in rows)
+
+
+def artifact_case_id(conn: sqlite3.Connection, handle: str) -> str:
+    row = conn.execute("SELECT case_id FROM artifacts WHERE handle = ?", (handle,)).fetchone()
+    if row is None:
+        raise NotFoundError(f"artifact not found: {handle}")
+    return str(row["case_id"])
+
+
+def event_count(conn: sqlite3.Connection, case_id: str, *, kind: str) -> int:
+    _ensure_case(conn, case_id)
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE case_id = ? AND kind = ?",
+        (case_id, kind),
+    ).fetchone()
+    return int(row["n"]) if row is not None else 0
